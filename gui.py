@@ -1,10 +1,22 @@
 import random
 import pygame
 
-from constants import ROWS, COLS, RED, BLACK
+from constants import (
+    ROWS, COLS, RED, BLACK, EMPTY,
+    GENERAL, ADVISOR, ELEPHANT, ROOK, CANNON, HORSE, SOLDIER,
+    PIECE_NAMES,
+)
 from board import Board
 
-# Bảng màu phong cách gỗ tự nhiên
+HANZI_RED = {
+    GENERAL: "帥", ADVISOR: "仕", ELEPHANT: "相",
+    ROOK: "俥", CANNON: "炮", HORSE: "傌", SOLDIER: "兵",
+}
+HANZI_BLACK = {
+    GENERAL: "將", ADVISOR: "士", ELEPHANT: "象",
+    ROOK: "車", CANNON: "包", HORSE: "馬", SOLDIER: "卒",
+}
+
 BG_OUTER = (38, 52, 42)
 WOOD_BASE = (205, 148, 92)
 WOOD_GRAIN = (192, 134, 78)
@@ -13,7 +25,14 @@ LINE_DARK = (92, 54, 24)
 LINE_HIGHLIGHT = (232, 182, 128)
 WATERMARK_COLOR = (165, 110, 62)
 
-# Kích thước
+IVORY_LIGHT = (248, 240, 222)
+IVORY_SHADE = (224, 208, 178)
+RED_INK = (188, 28, 28)
+BLACK_INK = (32, 30, 28)
+CORNER_GREEN = (45, 235, 70)
+HINT_DOT = (45, 210, 75)
+CAPTURE_RING = (235, 55, 55)
+
 CELL_SIZE = 68
 BOARD_PAD_X = 48
 BOARD_PAD_Y = 58
@@ -27,6 +46,19 @@ WINDOW_W = BOARD_BOX_W + OUTER_MARGIN * 2
 WINDOW_H = BOARD_BOX_H + OUTER_MARGIN * 2 + PANEL_HEIGHT
 
 
+def _load_cjk_font(size: int) -> tuple[pygame.font.Font, bool]:
+    candidates = [
+        "stkaiti", "kaiti", "dfkaisb", "simsun", "nsimsun",
+        "microsoftyahei", "pingfangsc", "hiraginosansgb",
+        "notoserifcjksc", "notosanscjksc", "wenquanyizenhei",
+    ]
+    available = set(pygame.font.get_fonts())
+    for name in candidates:
+        if name in available:
+            return pygame.font.SysFont(name, size, bold=True), True
+    return pygame.font.SysFont("arial,dejavusans,tahoma", max(14, size // 2), bold=True), False
+
+
 class XiangqiApp:
     def __init__(self, ai_depth: int = 3) -> None:
         pygame.init()
@@ -34,6 +66,7 @@ class XiangqiApp:
         self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
         self.clock = pygame.time.Clock()
 
+        self.font_piece, self.use_hanzi = _load_cjk_font(34)
         self.font_river = pygame.font.SysFont("georgia,timesnewroman,dejavuserif", 28, bold=True, italic=True)
         self.font_coord = pygame.font.SysFont("arial,dejavusans", 15, bold=True)
 
@@ -42,6 +75,10 @@ class XiangqiApp:
         self.human_side = RED
         self.ai_side = BLACK
         self.ai_depth = ai_depth
+
+        self.selected_pos = None
+        self.valid_targets = []
+        self.last_move = None
 
     def grid_to_pixel(self, r: int, c: int) -> tuple[int, int]:
         x = OUTER_MARGIN + BOARD_PAD_X + c * CELL_SIZE
@@ -132,3 +169,60 @@ class XiangqiApp:
             surf.blit(bot_txt, bot_txt.get_rect(center=(x, y1 + 30)))
 
         return surf
+
+    def draw_corner_brackets(self, r: int, c: int, color: tuple[int, int, int]) -> None:
+        x, y = self.grid_to_pixel(r, c)
+        d = PIECE_RADIUS + 4
+        arm = 11
+        corners = [
+            ((x - d, y - d), (1, 1)),
+            ((x + d, y - d), (-1, 1)),
+            ((x - d, y + d), (1, -1)),
+            ((x + d, y + d), (-1, -1)),
+        ]
+        for (cx, cy), (dx, dy) in corners:
+            pygame.draw.line(self.screen, (20, 60, 25), (cx + 1, cy + 1), (cx + dx * arm + 1, cy + 1), 3)
+            pygame.draw.line(self.screen, (20, 60, 25), (cx + 1, cy + 1), (cx + 1, cy + dy * arm + 1), 3)
+            pygame.draw.line(self.screen, color, (cx, cy), (cx + dx * arm, cy), 3)
+            pygame.draw.line(self.screen, color, (cx, cy), (cx, cy + dy * arm), 3)
+
+    def draw_highlights(self) -> None:
+        if self.last_move:
+            (r1, c1), (r2, c2) = self.last_move
+            self.draw_corner_brackets(r1, c1, CORNER_GREEN)
+            self.draw_corner_brackets(r2, c2, CORNER_GREEN)
+
+        if self.selected_pos:
+            self.draw_corner_brackets(*self.selected_pos, (255, 230, 60))
+
+        for tr, tc in self.valid_targets:
+            x, y = self.grid_to_pixel(tr, tc)
+            if self.board.grid[tr][tc] == EMPTY:
+                pygame.draw.circle(self.screen, (25, 70, 30), (x + 1, y + 1), 8)
+                pygame.draw.circle(self.screen, HINT_DOT, (x, y), 7)
+            else:
+                pygame.draw.circle(self.screen, CAPTURE_RING, (x, y), PIECE_RADIUS + 4, 3)
+
+    def draw_pieces(self) -> None:
+        for r in range(ROWS):
+            for c in range(COLS):
+                piece = self.board.grid[r][c]
+                if piece == EMPTY:
+                    continue
+                x, y = self.grid_to_pixel(r, c)
+                ink = RED_INK if piece > 0 else BLACK_INK
+
+                pygame.draw.circle(self.screen, (75, 45, 20), (x + 2, y + 4), PIECE_RADIUS)
+                pygame.draw.circle(self.screen, IVORY_SHADE, (x, y), PIECE_RADIUS)
+                pygame.draw.circle(self.screen, IVORY_LIGHT, (x, y - 1), PIECE_RADIUS - 2)
+                pygame.draw.circle(self.screen, (125, 105, 80), (x, y), PIECE_RADIUS, 2)
+                pygame.draw.circle(self.screen, ink, (x, y - 1), PIECE_RADIUS - 5, 2)
+
+                kind = abs(piece)
+                if self.use_hanzi:
+                    label = HANZI_RED[kind] if piece > 0 else HANZI_BLACK[kind]
+                else:
+                    label = PIECE_NAMES[kind]
+
+                txt = self.font_piece.render(label, True, ink)
+                self.screen.blit(txt, txt.get_rect(center=(x, y - 1)))
