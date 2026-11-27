@@ -72,12 +72,3 @@ class Board:
     def get_move_sequence(self) -> List[Move]:
         """Lịch sử dạng [((r1,c1),(r2,c2)), ...] - dùng cho opening_book."""
         return [((m[0], m[1]), (m[2], m[3])) for m in self.move_history]
-
-    # chiếu tướng - end
-    def is_in_check(self, player: int) -> bool:
-        """Tướng của player bị chiếu hoặc lộ mặt tướng. TODO (GĐ2)."""
-        return False
-
-    def is_checkmate(self, player: int) -> bool:
-        """player hết nước đi hợp lệ -> thua. TODO (GĐ2)."""
-        return len(self.get_legal_moves(player)) == 0
