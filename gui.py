@@ -1,4 +1,5 @@
 import random
+import threading
 import pygame
 
 from constants import (
@@ -6,7 +7,18 @@ from constants import (
     GENERAL, ADVISOR, ELEPHANT, ROOK, CANNON, HORSE, SOLDIER,
     PIECE_NAMES,
 )
-from board import Board
+from board import Board, side_of
+
+try:
+    from alphabeta import get_best_move
+    HAS_ALPHABETA = True
+except ImportError:
+    HAS_ALPHABETA = False
+
+    def get_best_move(board, depth=3, player=None):
+        moves = board.get_legal_moves(player)
+        return (random.choice(moves) if moves else None), 0
+
 
 HANZI_RED = {
     GENERAL: "帥", ADVISOR: "仕", ELEPHANT: "相",
@@ -59,7 +71,7 @@ def _load_cjk_font(size: int) -> tuple[pygame.font.Font, bool]:
     return pygame.font.SysFont("arial,dejavusans,tahoma", max(14, size // 2), bold=True), False
 
 
-class XiangqiApp:
+class ChineseChessApp:
     def __init__(self, ai_depth: int = 3) -> None:
         pygame.init()
         pygame.display.set_caption("Cờ Tướng AI — Minimax & Alpha-Beta Pruning")
@@ -69,16 +81,27 @@ class XiangqiApp:
         self.font_piece, self.use_hanzi = _load_cjk_font(34)
         self.font_river = pygame.font.SysFont("georgia,timesnewroman,dejavuserif", 28, bold=True, italic=True)
         self.font_coord = pygame.font.SysFont("arial,dejavusans", 15, bold=True)
+        self.font_ui = pygame.font.SysFont("arial,dejavusans,tahoma", 17, bold=True)
+        self.font_sub = pygame.font.SysFont("arial,dejavusans,tahoma", 13)
 
         self.board_surface = self._build_wood_board_surface()
+
         self.board = Board()
         self.human_side = RED
         self.ai_side = BLACK
         self.ai_depth = ai_depth
 
         self.selected_pos = None
+        self.legal_moves_cache = self.board.get_legal_moves(self.human_side)
         self.valid_targets = []
         self.last_move = None
+        self.in_check = False
+        self.game_over = False
+        self.winner_text = ""
+
+        self.ai_thinking = False
+        self.ai_result = None
+        self.ai_nodes = 0
 
     def grid_to_pixel(self, r: int, c: int) -> tuple[int, int]:
         x = OUTER_MARGIN + BOARD_PAD_X + c * CELL_SIZE
@@ -226,3 +249,147 @@ class XiangqiApp:
 
                 txt = self.font_piece.render(label, True, ink)
                 self.screen.blit(txt, txt.get_rect(center=(x, y - 1)))
+
+    def draw_status_bar(self) -> None:
+        bar_y = WINDOW_H - PANEL_HEIGHT
+        pygame.draw.rect(self.screen, (28, 38, 30), (0, bar_y, WINDOW_W, PANEL_HEIGHT))
+        pygame.draw.line(self.screen, (85, 105, 88), (0, bar_y), (WINDOW_W, bar_y), 2)
+
+        if self.game_over:
+            status = self.winner_text
+            color = (255, 215, 70)
+        elif self.ai_thinking:
+            status = f"AI (Đen) đang suy nghĩ ở độ sâu {self.ai_depth}..."
+            color = (120, 215, 255)
+        else:
+            warn = " — ĐANG BỊ CHIẾU TƯỚNG!" if self.in_check else ""
+            status = f"Lượt của bạn (Đỏ){warn}"
+            color = (255, 105, 105) if self.in_check else (245, 242, 232)
+
+        self.screen.blit(self.font_ui.render(status, True, color), (24, bar_y + 11))
+
+        mode = f"Alpha-Beta (depth={self.ai_depth})" if HAS_ALPHABETA else "AI Test (Ngẫu nhiên)"
+        nodes_str = f" • {self.ai_nodes:,} nodes" if self.ai_nodes > 0 else ""
+        hint = f"[U] Đi lại   [R] Ván mới   [ESC] Thoát   |   {mode}{nodes_str}"
+        self.screen.blit(self.font_sub.render(hint, True, (185, 195, 182)), (24, bar_y + 40))
+
+    def reset_game(self) -> None:
+        if self.ai_thinking:
+            return
+        self.board.reset()
+        self.selected_pos = None
+        self.legal_moves_cache = self.board.get_legal_moves(self.human_side)
+        self.valid_targets = []
+        self.last_move = None
+        self.in_check = False
+        self.game_over = False
+        self.winner_text = ""
+        self.ai_nodes = 0
+
+    def undo_turn(self) -> None:
+        if self.ai_thinking or len(self.board.move_history) < 2:
+            return
+        self.board.undo_move()
+        self.board.undo_move()
+        self.selected_pos = None
+        self.valid_targets = []
+        self.game_over = False
+        self.winner_text = ""
+        self.legal_moves_cache = self.board.get_legal_moves(self.human_side)
+        self.in_check = self.board.is_in_check(self.human_side)
+        if self.board.move_history:
+            m = self.board.move_history[-1]
+            self.last_move = ((m[0], m[1]), (m[2], m[3]))
+        else:
+            self.last_move = None
+
+    def start_ai_thread(self) -> None:
+        self.ai_thinking = True
+        self.ai_result = None
+
+        def worker():
+            move, nodes = get_best_move(self.board, depth=self.ai_depth, player=self.ai_side)
+            self.ai_result = (move, nodes)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def apply_ai_move_if_ready(self) -> None:
+        if not self.ai_thinking or self.ai_result is None:
+            return
+        move, nodes = self.ai_result
+        self.ai_thinking = False
+        self.ai_result = None
+        self.ai_nodes = nodes
+
+        if move is None:
+            self.game_over = True
+            self.winner_text = "CHIẾU BÍ! Bạn (Đỏ) đã giành chiến thắng!"
+            return
+
+        self.board.make_move(move)
+        self.last_move = move
+        self.legal_moves_cache = self.board.get_legal_moves(self.human_side)
+        self.in_check = self.board.is_in_check(self.human_side)
+
+        if len(self.legal_moves_cache) == 0:
+            self.game_over = True
+            self.winner_text = "CHIẾU BÍ! AI (Đen) đã giành chiến thắng!"
+
+    def handle_click(self, pos) -> None:
+        if self.game_over or self.ai_thinking or self.board.current_player != self.human_side:
+            return
+
+        cell = self.pixel_to_grid(*pos)
+        if cell is None:
+            self.selected_pos = None
+            self.valid_targets = []
+            return
+
+        r, c = cell
+        if side_of(self.board.grid[r][c]) == self.human_side:
+            self.selected_pos = (r, c)
+            self.valid_targets = [dst for (src, dst) in self.legal_moves_cache if src == (r, c)]
+            return
+
+        if self.selected_pos and (r, c) in self.valid_targets:
+            move = (self.selected_pos, (r, c))
+            self.board.make_move(move)
+            self.last_move = move
+            self.selected_pos = None
+            self.valid_targets = []
+            self.in_check = False
+
+            if self.board.is_checkmate(self.ai_side):
+                self.game_over = True
+                self.winner_text = "CHIẾU BÍ! Bạn (Đỏ) đã giành chiến thắng!"
+            else:
+                self.start_ai_thread()
+
+    def run(self) -> None:
+        running = True
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        running = False
+                    elif event.key == pygame.K_r:
+                        self.reset_game()
+                    elif event.key == pygame.K_u:
+                        self.undo_turn()
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    self.handle_click(event.pos)
+
+            self.apply_ai_move_if_ready()
+
+            self.screen.fill(BG_OUTER)
+            self.screen.blit(self.board_surface, (OUTER_MARGIN, OUTER_MARGIN))
+            self.draw_pieces()
+            self.draw_highlights()
+            self.draw_status_bar()
+
+            pygame.display.flip()
+            self.clock.tick(60)
+
+        pygame.quit()
