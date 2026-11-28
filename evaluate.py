@@ -91,7 +91,7 @@ PST = {
 
 def get_piece_score(piece: int, r: int, c: int) -> int:
     kind = abs(piece)
-    row_idx = r if piece > 0 else 0 - r # Den: lat hang
+    row_idx = r if piece > 0 else 9 - r  # Đen: lật hàng 9 - r
     return PIECE_VALUES[kind] + PST[kind][row_idx][c]
 
 def evaluate_board(board, curr_player: int) -> int:
@@ -100,9 +100,8 @@ def evaluate_board(board, curr_player: int) -> int:
     for r in range(ROWS):
         row = grid[r]
         for c in range(COLS):
-            p = row(c)
+            p = row[c]
             if p:
-                s = get_piece_score(p,r,c)
-                score += s if p * curr_player > 0 else -s #tru diem quan doi thu (den)
-
-        return score
+                s = get_piece_score(p, r, c)
+                score += s if p * curr_player > 0 else -s
+    return score
